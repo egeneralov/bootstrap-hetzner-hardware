@@ -20,6 +20,18 @@
   delay: 5
 
 
+- name: "ansible : gather_facts"
+  setup:
+
+
+- name: "umount : /target*"
+  mount:
+    path: "{{ item.mount }}"
+    state: unmounted
+  loop: "{{ ansible_mounts }}"
+  when: "'target' in item.mount"
+
+
 - name: "partition disks"
   include_tasks: 01-disks.yml
   with_dict: "{{ disks.partition }}"
