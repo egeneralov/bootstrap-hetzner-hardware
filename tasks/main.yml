@@ -90,19 +90,16 @@
   import_tasks: 03-postflight.yml
 
 
-- name: umount
+- name: "ansible : gather_facts"
+  setup:
+
+
+- name: "umount : /target*"
   mount:
-    path: "/target/{{ item }}"
+    path: "{{ item.mount }}"
     state: unmounted
-  with_items:
-    - dev
-    - sys
-    - proc
-    - data_nvme
-    - boot
-    - run
-    - 
-  when: auto_umount
+  loop: "{{ ansible_mounts }}"
+  when: "auto_umount and 'target' in item.mount"
 
 
 - name: Deactivate rescue mode
