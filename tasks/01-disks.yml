@@ -1,0 +1,43 @@
+---
+
+- name: "mdadm : stop"
+  shell: mdadm --stop --scan
+  register: mdadm_stop
+  changed_when: "'stopped' in mdadm_stop.stdout"
+
+
+- name: "{{ disk.key }} : Read device information"
+  parted:
+    device: "{{ disk.key }}"
+    unit: GB
+  register: disk_info
+
+
+- name: "{{ disk.key }} : Remove all partitions"
+  parted:
+    device: "{{ disk.key }}"
+    number: '{{ item.num }}'
+    state: absent
+  loop: '{{ disk_info.partitions }}'
+  register: partitions
+
+
+- name: "mdadm : stop"
+  shell: mdadm --stop --scan
+  register: mdadm_stop
+  changed_when: "'stopped' in mdadm_stop.stdout"
+
+
+- name: "{{ disk.key }} : Create partitions"
+  parted:
+    device: "{{ disk.key }}"
+    number: "{{ pidx + 1 }}"
+    state: present
+    unit: GB
+    part_start: "{{ partition.value.part_start|default(omit) }}"
+    part_end: "{{ partition.value.part_end|default(omit) }}"
+  with_dict: "{{ disk.value }}"
+  loop_control:
+    loop_var: partition
+    label: "{{ partition }}"
+    index_var: pidx

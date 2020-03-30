@@ -1,0 +1,140 @@
+---
+
+- block:
+    
+    - name: "recive registered account ssh key[s]"
+      uri:
+        url: https://robot-ws.your-server.de/key
+        return_content: true
+        method: GET
+        user: "{{ hetzner.username }}"
+        password: "{{ hetzner.password }}"
+        force_basic_auth: true
+        body_format: json
+        status_code: 200
+      register: keys
+    
+    
+    - debug:
+        var: fingerprint
+      when: debug
+    
+    
+    - name: "prepare authorized_key string"
+      when: keys is defined and keys
+      set_fact:
+        fingerprint: "{{ fingerprint }}&authorized_key[]={{ item.key.fingerprint }}"
+      with_items: '{{ keys.json }}'
+      register: authorized_keys
+      loop_control:
+        label: "{{ item.key.name }}"
+    
+    
+    - debug:
+        var: fingerprint
+      when: debug
+    
+    
+    # todo: fail if no keys
+    
+    
+    - name: "gather server status"
+      uri:
+        url: "https://robot-ws.your-server.de/boot/{{ ansible_host|default(inventory_hostname) }}/rescue"
+        method: GET
+        user: "{{ hetzner.username }}"
+        password: "{{ hetzner.password }}"
+        force_basic_auth: true
+        status_code: 200
+      register: rescue
+    
+    
+    - debug:
+        var: rescue
+      when: debug
+    
+    
+    - name: "enable boot to rescue"
+      when: not rescue.json.rescue.active
+      uri:
+        url: "https://robot-ws.your-server.de/boot/{{ ansible_host|default(inventory_hostname) }}/rescue"
+        method: POST
+        force_basic_auth: true
+        user: "{{ hetzner.username }}"
+        password: "{{ hetzner.password }}"
+        headers:
+          Content-Type: "application/x-www-form-urlencoded"
+        body: "os=linux&arch=64{{ fingerprint }}"
+        status_code: 200
+      register: activated
+    
+    
+    - debug:
+        var: activated
+      when: debug
+    
+    
+    - name: "request reset"
+      uri:
+        url: "https://robot-ws.your-server.de/reset/{{ ansible_host|default(inventory_hostname) }}"
+        method: POST
+        user: "{{ hetzner.username }}"
+        password: "{{ hetzner.password }}"
+        force_basic_auth: true
+        body: "type={{ hetzner.reboot_type }}"
+        status_code: 200
+        headers:
+          Content-Type: "application/x-www-form-urlencoded"
+      register: reset
+    
+    
+    - debug:
+        var: reset
+      when: debug
+    
+    
+  delegate_to: localhost
+
+
+
+- name: "Wait for server to be rebooted. If timeout - touch power and retry wait."
+  block:
+    
+    - name: "waiting for server"
+      wait_for:
+        host: "{{ ansible_host|default(inventory_hostname) }}"
+        port: 22
+        delay: 30
+        timeout: "{{ hetzner.reboot_timeout }}"
+    
+    
+  # catch the machine off state
+  rescue:
+    
+    - name: "power on server"
+      uri:
+        url: "https://robot-ws.your-server.de/reset/{{ ansible_host|default(inventory_hostname) }}"
+        method: POST
+        user: "{{ hetzner.username }}"
+        password: "{{ hetzner.password }}"
+        force_basic_auth: true
+        body: "type=power"
+        status_code: 200
+        headers:
+          Content-Type: "application/x-www-form-urlencoded"
+      register: reset
+    
+    
+    - name: "waiting for server"
+      wait_for:
+        host: "{{ ansible_host|default(inventory_hostname) }}"
+        port: 22
+        delay: 30
+        timeout: "{{ hetzner.reboot_timeout }}"
+    
+    
+    - debug:
+        var: reset
+      when: debug
+    
+  delegate_to: localhost

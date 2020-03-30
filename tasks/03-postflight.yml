@@ -1,0 +1,248 @@
+---
+
+
+- name: fstab
+  copy:
+    dest: /target/etc/fstab
+    content: |
+      {% for item in disks.mount %}
+      {{ disks.mount[item].src }} {{ item }} {{ disks.mount[item].filesystem|default('ext4') }} {{ disks.mount[item].options|default('defaults') }} 0 0
+      {% endfor %}
+
+
+- name: misc/userland
+  block:
+    - name: hostname
+      copy:
+        dest: /target/etc/hostname
+        content: "{{ inventory_hostname }}"
+    
+    - name: hosts
+      copy:
+        dest: /target/etc/hosts
+        content: |
+          {{ ansible_default_ipv4.address }} {{ inventory_hostname }}
+          127.0.0.1 localhost
+          {{ ansible_default_ipv6.address }} {{ inventory_hostname }}
+          ::1 localhost ip6-localhost ip6-loopback
+          ff02::1 ip6-allnodes
+          ff02::2 ip6-allrouters
+    
+    - name: motd
+      copy:
+        dest: /target/etc/motd
+        content: ""
+    
+    - name: bash.bashrc
+      copy:
+        dest: /target/etc/bash.bashrc
+        content: |
+          [ -z "$PS1" ] && return
+          
+          shopt -s checkwinsize
+          
+          if [ -z "${debian_chroot:-}" ] && [ -r /etc/debian_chroot ]; then
+              debian_chroot=$(cat /etc/debian_chroot)
+          fi
+          
+          if ! [ -n "${SUDO_USER}" -a -n "${SUDO_PS1}" ]; then
+            PS1='${debian_chroot:+($debian_chroot)}\u@\h:\w\$ '
+          fi
+          
+          . /etc/bash_completion
+
+
+- name: timezone
+  block:
+    - name: Set timezone
+      copy:
+        content: 'Etc/UTC'
+        dest: /target/etc/timezone
+        owner: root
+        group: root
+        mode: 0644
+    
+    - name: Remove existing localtime configuration file
+      file:
+        path: /etc/localtime
+        state: absent
+    
+    - name: Set localtime to UTC
+      file:
+        src: /usr/share/zoneinfo/Etc/UTC
+        dest: /target/etc/localtime
+        state: link
+        force: yes
+        owner: root
+        group: root
+        mode: 0644
+    
+    - name: Reconfigure tzdata
+      shell: dpkg-reconfigure -f noninteractive tzdata
+
+
+- name: locales
+  block:
+    - name: locale.gen
+      copy:
+        dest: /target/etc/locale.gen
+        content: |
+          en_US.UTF-8 UTF-8
+      register: locale_gen
+    
+    - name: default/locale
+      copy:
+        dest: /target/etc/default/locale
+        content: LANG=en_US.UTF-8
+    
+    - name: locale-gen
+      shell: locale-gen
+      changed_when: locale_gen.changed
+    
+    - name: environment setup
+      copy:
+        dest: /target/etc/environment
+        content: |
+          export LC_ALL=en_US.UTF-8
+
+    - name: "debconf-set-selections"
+      shell: 'echo "locales locales/{{ item }}" | chroot /target debconf-set-selections'
+      with_items:
+        - locales_to_be_generated multiselect en_US.UTF-8 UTF-8
+        - default_environment_locale select en_US.UTF-8
+      register: locale_debconf
+
+    - name: "debconf-set-selections"
+      shell: "chroot /target dpkg-reconfigure --frontend=noninteractive locales"
+      changed_when: locale_debconf.changed
+
+
+- name: openssh-server
+  block:
+    - name: /etc/ssh/sshd_config
+      copy:
+        dest: /target/etc/ssh/sshd_config
+        content: |
+          PermitRootLogin without-password
+          ChallengeResponseAuthentication yes
+          UsePAM yes
+          X11Forwarding yes
+          PrintMotd no
+          AcceptEnv LANG LC_*
+          Subsystem sftp /usr/lib/openssh/sftp-server
+          Port 22
+          PubkeyAuthentication yes
+          ListenAddress 0.0.0.0
+          SyslogFacility AUTH
+          LogLevel INFO
+          LoginGraceTime 10s
+          MaxAuthTries 10
+          PasswordAuthentication no
+          PermitEmptyPasswords no
+          GatewayPorts yes
+          AllowAgentForwarding yes
+          UseDNS no
+          AuthorizedKeysFile .ssh/authorized_keys
+          Banner none
+          PrintLastLog yes
+    
+    - name: /root/.ssh
+      file:
+        path: /target/root/.ssh
+        state: directory
+        mode: 0700
+    
+    - name: /root/.ssh/authorized_keys
+      copy:
+        dest: /target/root/.ssh/authorized_keys
+        content: "{% for key in root_ssh_keys %}{{ key }}\n{% endfor %}"
+        mode: 0600
+
+
+- name: grub
+  block:
+    - name: /etc/default/grub
+      copy:
+        dest: /target/etc/default/grub
+        content: |
+          GRUB_DEFAULT=0
+          GRUB_TIMEOUT=3
+          GRUB_DISTRIBUTOR=`lsb_release -i -s 2> /dev/null || echo Debian`
+          GRUB_CMDLINE_LINUX_DEFAULT="{{ GRUB_CMDLINE_LINUX_DEFAULT }}"
+          GRUB_DISABLE_RECOVERY=true
+          GRUB_CMDLINE_LINUX=""
+    
+    - name: "install grub"
+      shell: "chroot /target grub-install {{ item }}"
+      with_items: "{{ disks.partition }}"
+
+
+- name: chroot tasks
+  shell: "chroot /target {{ item }}"
+  with_items:
+    - systemctl enable systemd-resolved systemd-networkd fstrim.timer
+    - systemctl disable rsyslog getty@tty2.service getty@tty3.service getty@tty4.service getty@tty5.service getty@tty6.service
+    - update-grub
+
+
+- name: backports
+  block:
+    - name: backports repository
+      copy:
+        dest: /target/etc/apt/sources.list
+        content: |
+          deb http://deb.debian.org/debian {{ debootstrap.dist }} main contrib non-free
+          deb http://deb.debian.org/debian {{ debootstrap.dist }}-backports main contrib non-free
+      register: sources_list
+    
+    - name: apt-get
+      # monkeypatch with inline required, why?
+      shell: "DEBIAN_FRONTEND=noninteractive chroot /target apt-get {{ item }}"
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+      with_items:
+        - update
+        - "upgrade -yq -t {{ debootstrap.dist }}-backports"
+        - autoremove -yq
+        - autoclean -yq
+        - clean -yq
+        - update
+      changed_when: sources_list.changed
+      retries: 5
+      delay: 5
+    
+  when: debootstrap.backports
+
+
+- name: systemd
+  block:
+    - name: systemd/network
+      copy:
+        dest: /target/etc/systemd/network/wired-dhcp.network
+        content: |
+          [Match]
+          Name=e*
+          
+          [Network]
+          DHCP=ipv4
+    
+    - name: journald.conf
+      copy:
+        dest: /target/etc/systemd/journald.conf
+        content: |
+          [Journal]
+          SystemMaxUse=15G
+          SystemKeepFree=10G
+          ForwardToSyslog=no
+          ForwardToConsole=yes
+          ForwardToWall=no
+    
+    - name: /etc/resolv.conf
+      file:
+        src: /run/systemd/resolve/resolv.conf
+        dest: /target/etc/resolv.conf
+        state: link
+        force: yes
+        owner: root
+        group: root
+        mode: 0644

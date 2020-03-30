@@ -1,0 +1,16 @@
+---
+
+- name: "create : {{ mount.value.src }} : filesystem"
+  shell: "{{ mount.value.filesystem_create_cmd|default('yes | mkfs.' + mount.value.filesystem|default('ext4')) }} {{ mount.value.src }}"
+
+- name: "create : {{ mount.key }} : mountpoint"
+  file:
+    path: "/target{{ mount.key }}"
+    state: directory
+
+- name: "mount : /target{{ mount.key }}"
+  mount:
+    path: "/target{{ mount.key }}"
+    src: "{{ mount.value.src }}"
+    fstype: "{{ mount.value.filesystem|default('ext4') }}"
+    state: mounted

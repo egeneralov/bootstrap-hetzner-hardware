@@ -1,0 +1,119 @@
+---
+
+- name: "your-server.de"
+  include_tasks: 00-hetzner.yml
+  when: hetzner is defined and hetzner.username is defined and hetzner.password is defined and hetzner.reboot
+
+
+- name: "install : requirements"
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+    name:
+      - debootstrap
+      - grub-pc
+      - mdadm
+      - parted
+      - coreutils
+      - gdisk
+  retries: 2
+  delay: 5
+
+
+- name: "partition disks"
+  include_tasks: 01-disks.yml
+  with_dict: "{{ disks.partition }}"
+  loop_control:
+    loop_var: disk
+    label: "{{ disk.key }}"
+
+
+- name: "mdadm : stop"
+  shell: mdadm --stop --scan
+  register: mdadm_stop
+  changed_when: "'stopped' in mdadm_stop.stdout"
+
+
+- name: "mdadm : create"
+  shell: "yes | mdadm --create --raid-devices=2 --level={{ md.value.level|default(1) }}{% if md.value.metadata is defined %} --metadata={{ md.value.metadata }}{% endif %}{% if md.value.assume_clean %} --assume-clean{% endif %} {{ md.key }} {{ md.value.devices|join(' ') }}"
+  args:
+    creates: "{{ md.key }}"
+  with_dict: "{{ disks.mdadm }}"
+  loop_control:
+    loop_var: md
+    label: "{{ md.key }}"
+
+
+- name: "mount"
+  include_tasks: 02-mount.yml
+  with_dict: "{{ disks.mount }}"
+  loop_control:
+    loop_var: mount
+    label: "{{ mount.key }}"
+
+
+- name: bootstrap debian
+  shell: "/usr/sbin/debootstrap --include={{ debootstrap.packages|join(',') }} {{ debootstrap.options }} {{ debootstrap.dist }} /target {{ debootstrap.mirror }}"
+
+
+- name: "mount : prepare : chroot"
+  mount:
+    path: "/target/{{ item }}"
+    src: "/{{ item }}"
+    opts: bind
+    state: mounted
+    fstype: none
+  with_items:
+    - dev
+    - sys
+    - proc
+    - run
+
+
+- name: "ansible : gather facts"
+  setup:
+
+
+- name: postflight
+  import_tasks: 03-postflight.yml
+
+
+- name: umount
+  mount:
+    path: "/target/{{ item }}"
+    state: unmounted
+  with_items:
+    - dev
+    - sys
+    - proc
+    - data_nvme
+    - boot
+    - run
+    - 
+  when: auto_umount
+
+
+- name: Deactivate rescue mode
+  uri:
+    url: "https://robot-ws.your-server.de/boot/{{ ansible_host|default(inventory_hostname) }}/rescue"
+    method: DELETE
+    force_basic_auth: true
+    user: "{{ hetzner.username }}"
+    password: "{{ hetzner.password }}"
+    status_code: 200
+  when: hetzner is defined and hetzner.username is defined and hetzner.password is defined and hetzner.reboot
+  delegate_to: localhost
+
+
+- name: reboot
+  reboot:
+  when: auto_reboot
+
+
+- name: waiting for server to come back
+  wait_for:
+    host: "{{ ansible_host|default(inventory_hostname) }}"
+    port: 22
+    delay: 30
+    timeout: "{{ hetzner.reboot_timeout }}"
+  delegate_to: localhost

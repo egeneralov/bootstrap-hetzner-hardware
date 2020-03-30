@@ -1,0 +1,156 @@
+---
+# defaults file for egeneralov.bootstrap-hetzner-hardware
+
+
+# for api call debug
+debug: false
+
+
+# __do not touch this variable, keep empty__
+fingerprint: ""
+
+
+# optional
+hetzner:
+  # drop server into rescue system, works only with api credentials
+  reboot: false
+  # hw, power, man
+  reboot_type: hw
+  reboot_timeout: 180
+  # api credentials for robot.your-server.de
+  username: ""
+  password: ""
+
+
+disks:
+  partition:
+    /dev/nvme0n1:
+      boot:
+        part_end: 1GB
+      root:
+        part_start: 1GB
+        part_end: 121GB
+      data_nvme:
+        part_start: 121GiB
+    /dev/nvme1n1:
+      boot:
+        part_end: 1GB
+      root:
+        part_start: 1GB
+        part_end: 121GB
+      data_nvme:
+        mkfs: mkfs.btrfs -f
+        part_start: 121GiB
+  mdadm:
+    /dev/md0:
+      level: 1
+      assume_clean: true
+      metadata: 0.90
+      devices:
+        - /dev/nvme0n1p1
+        - /dev/nvme1n1p1
+    /dev/md1:
+      level: 1
+      assume_clean: true
+      metadata: 1.2
+      devices:
+        - /dev/nvme0n1p2
+        - /dev/nvme1n1p2
+    /dev/md2:
+      level: 0
+      assume_clean: true
+      metadata: 1.2
+      devices:
+        - /dev/nvme0n1p3
+        - /dev/nvme1n1p3
+  mount:
+    /:
+      src: /dev/md1
+      options: defaults,nodiscard
+    /boot:
+      src: /dev/md0
+      options: defaults,nodiscard
+    /data_nvme:
+      src: /dev/md2
+      options: defaults,nodiscard
+      filesystem: xfs
+      filesystem_create_cmd: mkfs.xfs -f
+
+# ssh keys list, default - from ansible controller
+root_ssh_keys:
+  - "{{ lookup('file', lookup('env','HOME') + '/.ssh/id_rsa.pub') }}"
+
+
+# debootstrap settings
+debootstrap:
+  dist: buster
+  # enable backports & upgrade from them
+  backports: true
+  mirror: http://deb.debian.org/debian
+  # bypass options to debootstrap command
+  options: --components=main,contrib,non-free --arch=amd64 --no-check-certificate --no-check-gpg
+  # packages to be installed to new system
+  packages:
+    - linux-base
+    - linux-image-amd64
+    - linux-headers-amd64
+    - systemd
+    - dbus
+    - grub-pc
+    - initramfs-tools
+    - busybox
+    - mdadm
+    # https://wiki.archlinux.org/index.php/Solid_state_drive#Periodic_TRIM
+    - util-linux
+    - openssh-server
+    - console-setup
+    - locales
+    - acpi-support
+    - bash-completion
+    - coreutils
+    # recommended for hw
+    - firmware-linux-nonfree
+    - firmware-realtek
+    # for ansible
+    - python-pip
+    - python3-pip
+    # default software
+    - htop
+    - nload
+    - iotop
+    - strace
+    - lsof
+    - xz-utils
+    - atop
+    - screen
+    - rsync
+    - tcpdump
+    - tcpflow
+    - nano
+    - vim
+    - dnsutils
+    - curl
+    - wget
+    - traceroute
+    - mtr
+    - sysstat
+    - ethtool
+    - apt-transport-https
+    - iptables
+    - jq
+    - linux-cpupower
+    - net-tools
+    - ncdu
+
+# grub options
+
+# https://linuxreviews.org/HOWTO_make_Linux_run_blazing_fast_(again)_on_Intel_CPUs
+# noibrs noibpb nopti nospectre_v2 nospectre_v1 l1tf=off nospec_store_bypass_disable no_stf_barrier mds=off mitigations=off
+# GRUB_NO_SECURITY: noibrs noibpb nopti nospectre_v2 nospectre_v1 l1tf=off nospec_store_bypass_disable no_stf_barrier mds=off mitigations=off
+
+GRUB_CMDLINE_LINUX_DEFAULT: "nomodeset consoleblank=0 swapaccount=1 cgroup_enable=memory net.ifnames=1 biosdevname=0 apparmor=0 selinux=0 {{ GRUB_NO_SECURITY|default('') }}"
+
+# unmount in rescue
+auto_umount: true
+# reboot rescue to new system
+auto_reboot: true
